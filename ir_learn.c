@@ -189,7 +189,11 @@ static void ir_learn_task(void *arg)
 
     ir_learn_common_param_t *learn_param = (ir_learn_common_param_t *) arg;
     rmt_rx_done_event_data_t learn_data;
-
+    if (learn_param == NULL || learn_param->ctx == NULL) {
+        ESP_LOGE(TAG, "learn_param->ctx is NULL! Cannot start rmt_receive.");
+        vTaskDelete(NULL);
+        return;
+    }
     learn_param->ctx->running = true;
     learn_param->ctx->learned_count = 0;
     learn_param->ctx->learned_sub = 0;
@@ -204,12 +208,28 @@ static void ir_learn_task(void *arg)
             vEventGroupDelete(learn_param->ctx->learn_event);
             learn_param->user_cb(IR_LEARN_STATE_EXIT, 0, NULL);
             ir_learn_destroy(learn_param->ctx);
+            free(learn_param);
             vTaskDelete(NULL);
         }
 
         if (xQueueReceive(learn_param->ctx->receive_queue, &learn_data, pdMS_TO_TICKS(500)) == pdPASS) {
 
             if (learn_data.num_symbols < 5) {
+                if (learn_param->ctx == NULL) {
+                    ESP_LOGE(TAG, "learn_param->ctx is NULL! Cannot start rmt_receive.");
+                    vTaskDelete(NULL);
+                    return;
+                }
+                if (learn_param->ctx->channel_rx == NULL) {
+                    ESP_LOGE(TAG, "learn_param->ctx->channel_rx is NULL! Cannot start rmt_receive.");
+                    vTaskDelete(NULL);
+                    return;
+                }
+                if (learn_param->ctx->rmt_rx.received_symbols == NULL) {
+                    ESP_LOGE(TAG, "learn_param->ctx->rmt_rx.num_symbols is NULL! Cannot start rmt_receive.");
+                    vTaskDelete(NULL);
+                    return;
+                }
                 rmt_receive(learn_param->ctx->channel_rx,
                             learn_param->ctx->rmt_rx.received_symbols, learn_param->ctx->rmt_rx.num_symbols, &ir_learn_rmt_rx_cfg);
                 continue;
@@ -495,8 +515,6 @@ esp_err_t ir_learn_check_valid(struct ir_learn_list_head *learn_head, struct ir_
     }
     return ESP_OK;
 }
-ir_learn_t *ir_learn_ctx;
-ir_learn_common_param_t learn_param;
 esp_err_t ir_learn_new(const ir_learn_cfg_t *cfg, ir_learn_handle_t *handle_out)
 {
     ESP_LOGI(TAG, "IR learn Version: %d.%d.%d", IR_LEARN_VER_MAJOR, IR_LEARN_VER_MINOR, IR_LEARN_VER_PATCH);
@@ -505,12 +523,12 @@ esp_err_t ir_learn_new(const ir_learn_cfg_t *cfg, ir_learn_handle_t *handle_out)
     esp_err_t ret = ESP_OK;
     IR_LEARN_CHECK(cfg && handle_out, "invalid argument", ESP_ERR_INVALID_ARG);
     IR_LEARN_CHECK(cfg->learn_count < IR_LEARN_STATE_READY, "learn count too larger", ESP_ERR_INVALID_ARG);
-
-    ir_learn_ctx = calloc(1, sizeof(ir_learn_t));
+    ir_learn_t* ir_learn_ctx = calloc(1, sizeof(ir_learn_t));
     IR_LEARN_CHECK(ir_learn_ctx, "no mem for ir_learn_ctx", ESP_ERR_NO_MEM);
-
-    learn_param.user_cb = cfg->callback;
-    learn_param.ctx = ir_learn_ctx;
+    //ir_learn_common_param_t learn_param;
+    ir_learn_common_param_t *learn_param = heap_caps_malloc(sizeof(ir_learn_common_param_t), MALLOC_CAP_INTERNAL);
+    learn_param->user_cb = cfg->callback;
+    learn_param->ctx = ir_learn_ctx;
 
 
     rmt_rx_channel_config_t rx_channel_cfg = {
@@ -550,9 +568,9 @@ esp_err_t ir_learn_new(const ir_learn_cfg_t *cfg, ir_learn_handle_t *handle_out)
     IR_LEARN_CHECK_GOTO(ir_learn_ctx->learn_event, "create event group failed", ESP_FAIL, err);
 
     if (cfg->task_affinity < 0) {
-        res = xTaskCreate(ir_learn_task, "ir learn task", cfg->task_stack, &learn_param, cfg->task_priority, NULL);
+        res = xTaskCreate(ir_learn_task, "ir learn task", cfg->task_stack, learn_param, cfg->task_priority, NULL);
     } else {
-        res = xTaskCreatePinnedToCore(ir_learn_task, "ir learn task", cfg->task_stack, &learn_param, cfg->task_priority, NULL, cfg->task_affinity);
+        res = xTaskCreatePinnedToCore(ir_learn_task, "ir learn task", cfg->task_stack, learn_param, cfg->task_priority, NULL, cfg->task_affinity);
     }
     IR_LEARN_CHECK_GOTO(res == pdPASS, "create ir_learn task fail!", ESP_FAIL, err);
 
